@@ -1,5 +1,7 @@
 streamlit
 pandas
 xlsxwriter
-
 openpyxl
+xlrd
+lxml
+beautifulsoup4
