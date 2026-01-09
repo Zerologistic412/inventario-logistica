@@ -5,252 +5,169 @@ import xlsxwriter
 from datetime import datetime
 
 # ==========================================
-# 1. CONFIGURACIÓN ROBUSTA
+# 1. CONFIGURACIÓN
 # ==========================================
-st.set_page_config(page_title="Sistema Inventario PRO", page_icon="🏢", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Inv. Móvil", page_icon="📱", layout="centered", initial_sidebar_state="collapsed")
 
+# CSS para móviles
 st.markdown("""
     <style>
-    /* Estética profesional */
-    html, body, [class*="css"] { font-family: 'Segoe UI', sans-serif; }
-    
-    /* El Panel de Control (Arriba) */
-    .control-panel {
-        background-color: #f0f2f6;
-        padding: 20px;
-        border-radius: 10px;
-        border: 1px solid #d1d5db;
-        margin-bottom: 20px;
-    }
-    
-    /* Tabla de Solo Lectura (Abajo) - Más limpia */
-    .stDataFrame { width: 100%; }
-    
-    /* Métricas grandes */
-    div[data-testid="stMetricValue"] { font-size: 28px; }
+    div.stButton > button { width: 100%; height: 60px; font-size: 20px; font-weight: bold; border-radius: 12px; margin-bottom: 10px; }
+    div[data-testid="stMetricValue"] { font-size: 24px; }
+    .product-card { background-color: #e8f4f8; padding: 15px; border-radius: 15px; border: 2px solid #0078D7; margin-bottom: 15px; text-align: center; }
+    .product-title { font-size: 22px; font-weight: bold; color: #1f2937; }
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. LÓGICA DE NEGOCIO
+# 2. LÓGICA DE CARGA (MEJORADA)
 # ==========================================
 def cargar_datos(file):
-    try: df = pd.read_excel(file, header=None)
+    # Intentar leer Excel o CSV
+    try:
+        df = pd.read_excel(file, header=None)
     except:
-        file.seek(0)
-        try: df = pd.read_csv(file, header=None, sep=None, engine='python', encoding='latin-1')
-        except: return None
-            
+        try:
+            file.seek(0)
+            df = pd.read_csv(file, header=None, sep=None, engine='python', encoding='latin-1')
+        except Exception as e:
+            st.error(f"❌ Error leyendo el archivo: {e}")
+            return None
+
+    # Buscar la fila de encabezados
     start_row = -1
     for index, row in df.iterrows():
-        s_row = str(row.values)
-        if "Producto" in s_row and "Cantidad" in s_row:
+        fila_texto = str(row.values).lower()
+        # Buscamos palabras clave flexibles
+        tiene_nombre = "producto" in fila_texto or "descripcion" in fila_texto or "descripción" in fila_texto
+        tiene_cant = "cantidad" in fila_texto or "stock" in fila_texto or "saldo" in fila_texto or "requerido" in fila_texto
+        
+        if tiene_nombre and tiene_cant:
             start_row = index
             break
     
-    if start_row == -1: return None
+    if start_row == -1:
+        st.error("⚠️ NO ENCUENTRO LOS DATOS. Tu Excel debe tener una fila con títulos que diga 'Producto' (o Descripción) y 'Cantidad' (o Stock).")
+        st.write("Así veo tu archivo (primeras 5 filas):", df.head())
+        return None
     
-    df_data = df.iloc[start_row + 1:].copy()
-    try: df_clean = df_data.iloc[:, [0, 2, 8, 10]]
-    except: df_clean = df_data.dropna(axis=1, how='all').iloc[:, :4]
+    # Procesar columnas
+    try:
+        df_data = df.iloc[start_row + 1:].copy()
+        df_data.columns = df.iloc[start_row] # Asignar títulos encontrados
+        
+        # Limpiar nombres de columnas
+        df_data.columns = [str(c).lower().strip() for c in df_data.columns]
+        columnas = df_data.columns
 
-    df_clean.columns = ['codigo', 'descripcion', 'requerido', 'unidad']
-    df_clean['requerido'] = pd.to_numeric(df_clean['requerido'], errors='coerce').fillna(0)
-    df_clean = df_clean[df_clean['requerido'] > 0]
-    df_clean['descripcion'] = df_clean['descripcion'].astype(str).str.strip()
-    df_clean['unidad'] = df_clean['unidad'].astype(str).str.strip().fillna('').str.upper()
-    df_clean['fisico'] = 0.0
-    df_clean['origen'] = 'SISTEMA'
-    df_clean['fecha_conteo'] = None
-    
-    # Crear un campo único para búsqueda rápida
-    df_clean['busqueda'] = df_clean['descripcion'] + " | " + df_clean['unidad']
-    
-    return df_clean.reset_index(drop=True)
+        # Identificar columnas automáticamente
+        col_desc = next((c for c in columnas if "producto" in c or "descrip" in c), None)
+        col_req = next((c for c in columnas if "cantidad" in c or "stock" in c or "saldo" in c), None)
+        col_cod = next((c for c in columnas if "codigo" in c or "sku" in c), None)
+        col_und = next((c for c in columnas if "unidad" in c or "medida" in c), None)
+
+        if not col_desc or not col_req:
+            st.error(f"❌ Faltan columnas. Encontré: {list(columnas)}, pero necesito 'Producto' y 'Cantidad'.")
+            return None
+
+        # Crear DataFrame limpio
+        df_clean = pd.DataFrame()
+        df_clean['descripcion'] = df_data[col_desc].astype(str).str.strip()
+        df_clean['requerido'] = pd.to_numeric(df_data[col_req], errors='coerce').fillna(0)
+        
+        if col_cod: df_clean['codigo'] = df_data[col_cod].astype(str).str.strip()
+        else: df_clean['codigo'] = "-"
+            
+        if col_und: df_clean['unidad'] = df_data[col_und].astype(str).str.strip().upper()
+        else: df_clean['unidad'] = "UND"
+
+        # Filtrar vacíos
+        df_clean = df_clean[df_clean['descripcion'] != 'nan']
+        df_clean = df_clean[df_clean['requerido'] > 0]
+        
+        # Columnas de trabajo
+        df_clean['fisico'] = 0.0
+        df_clean['fecha_conteo'] = None
+        df_clean['busqueda'] = df_clean['descripcion'] 
+        
+        return df_clean.reset_index(drop=True)
+
+    except Exception as e:
+        st.error(f"❌ Error procesando columnas: {e}")
+        return None
 
 # ==========================================
-# 3. INTERFAZ TIPO "CAJERO / SCANNER"
+# 3. INTERFAZ
 # ==========================================
-st.title("🏢 Inventario Rápido (Modo Scanner)")
+if 'df_master' not in st.session_state: st.session_state.df_master = None
 
-if 'df_master' not in st.session_state: 
-    st.session_state.df_master = None
-    st.session_state.ultimo_editado = ""
-
-# --- PASO 1: CARGA ---
 if st.session_state.df_master is None:
-    with st.expander("📂 INICIAR SESIÓN (Cargar Archivo)", expanded=True):
-        archivo = st.file_uploader("Sube Excel", type=['xlsx','xls','csv'])
-        if archivo:
+    st.title("📱 Inventario Móvil")
+    st.info("Sube el archivo para empezar.")
+    archivo = st.file_uploader("Toca para subir Excel", type=['xlsx','csv'])
+    
+    if archivo:
+        with st.spinner("Leyendo archivo..."):
             df_new = cargar_datos(archivo)
             if df_new is not None:
                 st.session_state.df_master = df_new
                 st.rerun()
 
-# --- PASO 2: OPERACIÓN ---
 else:
     df = st.session_state.df_master
     
-    # Calcular métricas globales
-    total_items = len(df)
-    items_contados = len(df[df['fisico'] > 0])
-    avance = int((items_contados / total_items) * 100) if total_items > 0 else 0
-    
-    # --- BARRA SUPERIOR DE ESTADO ---
-    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-    c1.progress(avance, text=f"Progreso Global: {avance}%")
-    c2.metric("Total Productos", total_items)
-    c3.metric("Ya Contados", items_contados)
-    
-    pendientes = total_items - items_contados
-    c4.metric("Pendientes", pendientes, delta_color="inverse")
+    # Barra Superior
+    c1, c2 = st.columns([3,1])
+    progreso = len(df[df['fisico']>0])
+    c1.progress(progreso/len(df), text=f"Avance: {progreso}/{len(df)}")
+    if c2.button("💾"): st.session_state.descargar = True
 
-    st.markdown("---")
+    # Buscador
+    lista = ["🔍 Buscar..."] + df['busqueda'].tolist()
+    sel = st.selectbox("", lista, label_visibility="collapsed")
 
-    # ======================================================
-    # ZONA DE TRABAJO (INPUTS ARRIBA - SIN LAG)
-    # ======================================================
-    col_input, col_info = st.columns([1, 1])
-
-    with col_input:
-        st.info("👇 **ZONA DE CONTEO**")
+    if sel != "🔍 Buscar...":
+        idx = df[df['busqueda'] == sel].index[0]
+        row = df.iloc[idx]
+        val = row['fisico']
         
-        # 1. Selector de Producto (Funciona como buscador)
-        lista_productos = df['busqueda'].tolist()
-        producto_selec = st.selectbox(
-            "1. Busca el Producto:", 
-            options=["Seleccionar..."] + lista_productos,
-            index=0
-        )
+        st.markdown(f"""
+        <div class="product-card">
+            <div class="product-title">{row['descripcion']}</div>
+            <div>COD: {row['codigo']} | {row['unidad']}</div>
+            <h3>Esperado: {row['requerido']}</h3>
+        </div>
+        """, unsafe_allow_html=True)
         
-        # 2. Input de Cantidad
-        # Usamos un formulario para agrupar la acción y evitar recargas parciales
-        with st.form("panel_entrada", clear_on_submit=True):
-            cantidad_input = st.number_input("2. Cantidad Física:", min_value=0.0, step=1.0)
-            
-            # Botones grandes
-            cols_btn = st.columns(2)
-            guardar = cols_btn[0].form_submit_button("✅ GUARDAR (Enter)", type="primary")
-            nuevo_manual = cols_btn[1].form_submit_button("➕ CREAR NUEVO")
-            
-            if guardar and producto_selec != "Seleccionar...":
-                # Lógica de actualización INSTANTÁNEA
-                idx = df[df['busqueda'] == producto_selec].index[0]
-                st.session_state.df_master.at[idx, 'fisico'] = cantidad_input
-                st.session_state.df_master.at[idx, 'fecha_conteo'] = datetime.now().strftime("%H:%M:%S")
-                st.session_state.ultimo_editado = f"{producto_selec.split('|')[0]} -> {cantidad_input}"
-                st.rerun()
-            
-            if nuevo_manual:
-                # Marcador para abrir modal o cambiar estado (simplificado aquí)
-                st.session_state.modo_crear = True
-                st.rerun()
+        # Panel Conteo
+        c_num, c_bot = st.columns([1,2])
+        with c_num:
+             st.markdown(f"<h1 style='text-align:center; color:#0078D7; font-size:50px;'>{int(val)}</h1>", unsafe_allow_html=True)
+        
+        # Botonera
+        b1, b2, b3, b4 = st.columns(4)
+        def act(n):
+            st.session_state.df_master.at[idx, 'fisico'] = max(0, val + n)
+            st.session_state.df_master.at[idx, 'fecha_conteo'] = datetime.now().strftime("%H:%M")
+            st.rerun()
 
-    # ZONA DE INFORMACIÓN DEL PRODUCTO SELECCIONADO (VISTA PREVIA)
-    with col_info:
-        if producto_selec != "Seleccionar...":
-            row = df[df['busqueda'] == producto_selec].iloc[0]
-            
-            st.success(f"**Producto:** {row['descripcion']}")
-            
-            col_i1, col_i2, col_i3 = st.columns(3)
-            col_i1.metric("Sistema (Req)", row['requerido'])
-            
-            # Calculamos diferencia en tiempo real para visualización
-            diff = cantidad_input - row['requerido'] # Pre-cálculo visual
-            if diff == 0: color_diff = "normal"
-            else: color_diff = "off"
-            
-            col_i2.metric("Unidad", row['unidad'])
-            col_i3.metric("Estado Actual", 
-                          "✅ OK" if row['fisico'] == row['requerido'] and row['fisico'] > 0 else 
-                          ("🔻 FALTAN" if row['fisico'] < row['requerido'] else "🔺 SOBRAN"))
+        if b1.button("➖1"): act(-1)
+        if b2.button("➕1"): act(1)
+        if b3.button("➕5"): act(5)
+        if b4.button("➕10"): act(10)
+        
+        if val == row['requerido']: st.success("✅ ¡Completo!")
+        
+    else:
+        st.info("👆 Selecciona un producto arriba.")
 
-            if st.session_state.ultimo_editado:
-                st.caption(f"Último guardado: {st.session_state.ultimo_editado}")
-        else:
-            st.warning("👈 Selecciona un producto para empezar a contar.")
-
-    # --- AGREGAR PRODUCTO MANUAL (SI SE ACTIVÓ) ---
-    if st.session_state.get('modo_crear', False):
-        with st.expander("Crear Producto Nuevo", expanded=True):
-            with st.form("crear_manual"):
-                nm_nom = st.text_input("Nombre")
-                nm_und = st.text_input("Unidad")
-                nm_cant = st.number_input("Cantidad", 1.0)
-                if st.form_submit_button("Guardar Nuevo"):
-                    new_row = pd.DataFrame([{
-                        'codigo':'MAN','descripcion':nm_nom,'requerido':0,'unidad':nm_und.upper(),
-                        'fisico':nm_cant,'origen':'MANUAL', 'busqueda': f"{nm_nom} | {nm_und.upper()}",
-                        'fecha_conteo': datetime.now().strftime("%H:%M:%S")
-                    }])
-                    st.session_state.df_master = pd.concat([st.session_state.df_master, new_row], ignore_index=True)
-                    st.session_state.modo_crear = False
-                    st.rerun()
-            if st.button("Cancelar"):
-                st.session_state.modo_crear = False
-                st.rerun()
-
-    st.write("---")
-
-    # ======================================================
-    # ZONA DE LISTADO (SOLO LECTURA - ACTUALIZACIÓN INSTANTÁNEA)
-    # ======================================================
-    # Filtros de visualización
-    fc1, fc2, fc3 = st.columns([2, 1, 1])
-    search_list = fc1.text_input("🔍 Filtrar lista abajo:", placeholder="Buscar...")
-    ver_pendientes = fc2.checkbox("Ver solo pendientes", value=False)
-    
-    # Preparar vista
-    df_view = st.session_state.df_master.copy()
-    
-    # Calcular Emojis para la tabla
-    def get_status(r):
-        if r['origen'] == 'MANUAL': return "🆕 NUEVO"
-        if r['fisico'] == 0 and r['requerido'] > 0: return "⬜ PENDIENTE"
-        if r['fisico'] == r['requerido']: return "✅ CORRECTO"
-        if r['fisico'] < r['requerido']: return "🔻 FALTA"
-        return "🔺 SOBRA"
-    
-    df_view['ESTADO'] = df_view.apply(get_status, axis=1)
-    
-    # Filtros
-    if search_list:
-        df_view = df_view[df_view['descripcion'].str.lower().str.contains(search_list.lower())]
-    if ver_pendientes:
-        df_view = df_view[df_view['fisico'] == 0]
-
-    # Ordenar: Lo último contado arriba para ver confirmación visual
-    df_view = df_view.sort_values(by=['fecha_conteo'], ascending=False)
-
-    # Mostrar Tabla (SOLO LECTURA = CERO BUGS)
-    st.dataframe(
-        df_view[['descripcion', 'unidad', 'requerido', 'fisico', 'ESTADO', 'fecha_conteo']],
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "descripcion": "Producto",
-            "requerido": "Sistema",
-            "fisico": "Físico",
-            "ESTADO": "Estado",
-            "fecha_conteo": "Hora"
-        }
-    )
-
-    # --- DESCARGA ---
-    st.write("---")
-    if st.button("📥 Descargar Reporte Final"):
+    # Descarga
+    if st.session_state.get('descargar', False):
+        st.write("---")
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-            df_final = st.session_state.df_master.copy()
-            df_final['Diferencia'] = df_final['fisico'] - df_final['requerido']
-            df_final['Estado_Final'] = df_final.apply(get_status, axis=1)
-            
-            df_final.drop(columns=['busqueda']).to_excel(writer, sheet_name='INVENTARIO', index=False)
-            
-            # Formato condicional básico
-            wb = writer.book; ws = writer.sheets['INVENTARIO']
-            fmt_ok = wb.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
-            ws.conditional_format(1, 6, len(df_final), 6, {'type':'text','criteria':'containing','value':'CORRECTO','format':fmt_ok})
-            
-        st.download_button("Guardar Excel", data=buffer.getvalue(), file_name="Inventario_Final.xlsx")
+            st.session_state.df_master.to_excel(writer, index=False)
+        st.download_button("📥 BAJAR EXCEL", buffer.getvalue(), "Conteo.xlsx", "application/vnd.ms-excel", type="primary")
+        if st.button("Cerrar"): 
+            st.session_state.descargar = False
+            st.rerun()
